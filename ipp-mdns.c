@@ -1,13 +1,13 @@
 /* sane-ipp -- IPP backend for SANE
  *
- * Copyright (C) 2026 Yogesh Singla
+ * Copyright (C) 2026 Alexander Pevzner (pzz@apevzner.com)
+ * Copyright (C) 2026 Yogesh Singla (yogeshsingla481@gmail.com)
  * SPDX-License-Identifier: BSD-2-Clause
  * See LICENSE for license terms and conditions
  *
  * MDNS device discovery (synchronous)
  *
- * This is the blocking counterpart of the event-loop driven discovery
- * used by sane-airscan: a private AvahiSimplePoll is created, browsers
+ * Discovery is blocking: a private AvahiSimplePoll is created, browsers
  * for _ipp._tcp and _ipps._tcp are started, and the poll is iterated
  * until browsing settles or the caller's timeout expires.
  */
@@ -536,9 +536,8 @@ ipp_mdns_browser_callback (AvahiServiceBrowser *b, AvahiIfIndex interface,
 
         dev = ipp_device_get(ctx, name, type, (int) interface, tls);
 
-        /* Resolve IPv4 and IPv6 separately, exactly as sane-airscan does:
-         * a single AVAHI_PROTO_UNSPEC resolver would only report one of
-         * the address families.
+        /* Resolve IPv4 and IPv6 separately: a single AVAHI_PROTO_UNSPEC
+         * resolver would only report one of the address families.
          */
         ipp_mdns_resolve(ctx, dev, interface, protocol, name, type, domain,
             AVAHI_PROTO_INET);

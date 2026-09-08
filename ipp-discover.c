@@ -1,6 +1,7 @@
 /* sane-ipp -- IPP backend for SANE
  *
- * Copyright (C) 2026 Yogesh Singla
+ * Copyright (C) 2026 Alexander Pevzner (pzz@apevzner.com)
+ * Copyright (C) 2026 Yogesh Singla (yogeshsingla481@gmail.com)
  * SPDX-License-Identifier: BSD-2-Clause
  * See LICENSE for license terms and conditions
  *
