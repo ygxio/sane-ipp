@@ -1,0 +1,23 @@
+# Build products
+ipp-discover
+libsane-ipp.so*
+*.o
+*.d
+*.so
+*.a
+objs/
+
+# Editor and tooling droppings
+tags
+TAGS
+compile_commands.json
+.cache/
+*.swp
+*~
+*.orig
+*.rej
+
+# Crash dumps
+core
+core.*
+vgcore.*
