@@ -104,6 +104,26 @@ ipp_proto_err (char *errbuf, size_t errlen, const char *fmt, ...)
     ipp_proto_dbg("%s", errbuf);
 }
 
+/* What we ask a service to report.
+ *
+ * "all" is not everything: an attribute the printer considers optional
+ * is only returned when it is named. The scan attributes are such a
+ * case on some services, so they are spelled out here rather than left
+ * to the wildcard (PWG 5100.15, RFC 8011 section 4.2.5).
+ */
+static const char * const ipp_requested_attrs[] = {
+    "all",
+    "input-attributes-default",
+    "input-attributes-supported",
+    "input-color-mode-supported",
+    "input-media-supported",
+    "input-orientation-requested-supported",
+    "input-quality-supported",
+    "input-resolution-supported",
+    "input-sides-supported",
+    "input-source-supported"
+};
+
 /******************** Attribute decoding ********************/
 /* Fetch a single-valued string attribute, regardless of its value tag.
  * Returns NULL if the attribute is absent.
@@ -200,6 +220,43 @@ ipp_attr_int_list (ipp_t *resp, const char *name, size_t *count)
     return list;
 }
 
+/* Fetch a multi-valued resolution attribute. Returns NULL and sets
+ * *count to zero if the attribute is absent or holds no resolutions.
+ */
+static ipp_resolution*
+ipp_attr_res_list (ipp_t *resp, const char *name, size_t *count)
+{
+    ipp_attribute_t *attr = ippFindAttribute(resp, name, IPP_TAG_RESOLUTION);
+    ipp_resolution  *list;
+    int             i, n;
+
+    *count = 0;
+
+    if (attr == NULL) {
+        return NULL;
+    }
+
+    n = ippGetCount(attr);
+    if (n <= 0) {
+        return NULL;
+    }
+
+    list = ipp_proto_alloc(sizeof(*list) * (size_t) n);
+
+    for (i = 0; i < n; i ++) {
+        ipp_res_t units;
+
+        /* The cross-feed resolution is the return value, the feed
+         * resolution comes back through the second argument
+         */
+        list[i].x = ippGetResolution(attr, i, &list[i].y, &units);
+        list[i].units = (int) units;
+    }
+
+    *count = (size_t) n;
+    return list;
+}
+
 /* Release an array of strings
  */
 static void
@@ -215,6 +272,28 @@ ipp_str_list_free (char **list, size_t count)
 }
 
 /******************** Printer attributes ********************/
+/* Release scan capabilities
+ */
+static void
+ipp_scanner_free (ipp_scanner *scanner)
+{
+    if (scanner == NULL) {
+        return;
+    }
+
+    ipp_str_list_free(scanner->color_modes, scanner->n_color_modes);
+    ipp_str_list_free(scanner->sources, scanner->n_sources);
+    ipp_str_list_free(scanner->media, scanner->n_media);
+    ipp_str_list_free(scanner->sides, scanner->n_sides);
+    ipp_str_list_free(scanner->members, scanner->n_members);
+
+    free(scanner->resolutions);
+    free(scanner->qualities);
+    free(scanner->orientations);
+
+    free(scanner);
+}
+
 /* Release the structure returned by ipp_get_printer_attributes()
  */
 void
@@ -236,6 +315,9 @@ ipp_printer_free (ipp_printer *printer)
     ipp_str_list_free(printer->formats, printer->n_formats);
 
     free(printer->ops);
+
+    ipp_scanner_free(printer->scanner);
+
     free(printer);
 }
 
@@ -283,6 +365,52 @@ ipp_state_name (int state)
     return "unknown";
 }
 
+/* Decode the scan capabilities out of a Get-Printer-Attributes response.
+ *
+ * IPP Scan has no operation of its own for this: a scan service answers
+ * Get-Printer-Attributes and its capabilities ride in that response
+ * alongside the printing ones (PWG 5100.15).
+ *
+ * Returns NULL when the response carries no scan attribute at all, which
+ * is how a print-only service answers.
+ */
+static ipp_scanner*
+ipp_scanner_decode (ipp_t *resp)
+{
+    ipp_scanner *scanner = ipp_proto_alloc(sizeof(*scanner));
+
+    memset(scanner, 0, sizeof(*scanner));
+
+    scanner->color_modes = ipp_attr_str_list(resp,
+            "input-color-mode-supported", &scanner->n_color_modes);
+    scanner->sources = ipp_attr_str_list(resp,
+            "input-source-supported", &scanner->n_sources);
+    scanner->media = ipp_attr_str_list(resp,
+            "input-media-supported", &scanner->n_media);
+    scanner->sides = ipp_attr_str_list(resp,
+            "input-sides-supported", &scanner->n_sides);
+    scanner->members = ipp_attr_str_list(resp,
+            "input-attributes-supported", &scanner->n_members);
+
+    scanner->resolutions = ipp_attr_res_list(resp,
+            "input-resolution-supported", &scanner->n_resolutions);
+
+    scanner->qualities = ipp_attr_int_list(resp,
+            "input-quality-supported", &scanner->n_qualities);
+    scanner->orientations = ipp_attr_int_list(resp,
+            "input-orientation-requested-supported", &scanner->n_orientations);
+
+    if (scanner->n_color_modes == 0 && scanner->n_sources == 0 &&
+        scanner->n_media == 0 && scanner->n_sides == 0 &&
+        scanner->n_members == 0 && scanner->n_resolutions == 0 &&
+        scanner->n_qualities == 0 && scanner->n_orientations == 0) {
+        ipp_scanner_free(scanner);
+        return NULL;
+    }
+
+    return scanner;
+}
+
 /* Decode a Get-Printer-Attributes response
  */
 static ipp_printer*
@@ -320,6 +448,8 @@ ipp_printer_decode (ipp_t *resp)
     if (attr != NULL) {
         printer->accepting_jobs = ippGetBoolean(attr, 0) != 0;
     }
+
+    printer->scanner = ipp_scanner_decode(resp);
 
     return printer;
 }
@@ -395,8 +525,10 @@ ipp_get_printer_attributes (const char *uri, int timeout_ms,
 
     ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_URI,
             "printer-uri", NULL, uri);
-    ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_KEYWORD,
-            "requested-attributes", NULL, "all");
+    ippAddStrings(request, IPP_TAG_OPERATION, IPP_TAG_KEYWORD,
+            "requested-attributes", sizeof(ipp_requested_attrs) /
+                    sizeof(ipp_requested_attrs[0]),
+            NULL, ipp_requested_attrs);
 
     /* cupsDoRequest() consumes the request, whatever the outcome
      */

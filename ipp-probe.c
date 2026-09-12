@@ -45,7 +45,7 @@ print_str (const char *label, const char *value)
 /* Print a list of strings on one line, or nothing if the list is empty
  */
 static void
-print_str_list (const char *label, char **list, size_t count)
+print_str_list (const char *label, char * const *list, size_t count)
 {
     size_t i;
 
@@ -78,6 +78,62 @@ print_ops (const ipp_printer *printer)
     }
 }
 
+/* Print a list of integers on one line, or nothing if the list is empty
+ */
+static void
+print_int_list (const char *label, const int *list, size_t count)
+{
+    size_t i;
+
+    if (count == 0) {
+        return;
+    }
+
+    printf("  %-16s", label);
+    for (i = 0; i < count; i ++) {
+        printf("%s%d", i != 0 ? " " : "", list[i]);
+    }
+    printf("\n");
+}
+
+/* Print the scan capabilities, or nothing if the service reported none
+ */
+static void
+print_scanner (const ipp_scanner *scanner)
+{
+    size_t i;
+
+    if (scanner == NULL) {
+        printf("  %-16sno\n", "scan service:");
+        return;
+    }
+
+    printf("  %-16syes\n", "scan service:");
+
+    print_str_list("  color modes:", scanner->color_modes,
+            scanner->n_color_modes);
+    print_str_list("  sources:", scanner->sources, scanner->n_sources);
+    print_str_list("  media:", scanner->media, scanner->n_media);
+    print_str_list("  sides:", scanner->sides, scanner->n_sides);
+    print_int_list("  qualities:", scanner->qualities, scanner->n_qualities);
+    print_int_list("  orientations:", scanner->orientations,
+            scanner->n_orientations);
+
+    if (scanner->n_resolutions != 0) {
+        printf("  %-16s", "  resolutions:");
+        for (i = 0; i < scanner->n_resolutions; i ++) {
+            const ipp_resolution *res = &scanner->resolutions[i];
+            const char           *units =
+                res->units == IPP_RESOLUTION_PER_CM ? "dpcm" : "dpi";
+
+            printf("%s%dx%d%s", i != 0 ? " " : "", res->x, res->y, units);
+        }
+        printf("\n");
+    }
+
+    print_str_list("  settable:", scanner->members, scanner->n_members);
+}
+
 /* Print everything known about one printer
  */
 static void
@@ -101,6 +157,7 @@ print_printer (const char *uri, const ipp_printer *printer)
     print_str_list("uris:", printer->uris, printer->n_uris);
     print_str_list("formats:", printer->formats, printer->n_formats);
     print_ops(printer);
+    print_scanner(printer->scanner);
 
     printf("\n");
 }
