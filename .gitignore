@@ -1,5 +1,6 @@
 # Build products
 ipp-discover
+ipp-probe
 libsane-ipp.so*
 *.o
 *.d

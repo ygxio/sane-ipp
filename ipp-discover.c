@@ -9,7 +9,9 @@
  */
 
 #include "ipp-mdns.h"
+#include "ipp-zeroconf.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,8 +21,9 @@
 static void
 usage (const char *argv0, int exit_code)
 {
-    printf("usage: %s [-d] [-t TIMEOUT_MS]\n", argv0);
+    printf("usage: %s [-d] [-z] [-t TIMEOUT_MS]\n", argv0);
     printf("  -d            enable debug output\n");
+    printf("  -z            report assembled devices, not raw findings\n");
     printf("  -t TIMEOUT_MS discovery timeout, default 2500\n");
     exit(exit_code);
 }
@@ -74,12 +77,72 @@ print_device (const ipp_device *dev)
     printf("\n");
 }
 
+/* Print a device assembled by the zeroconf layer
+ */
+static void
+print_zc_device (const ipp_zc_device *device)
+{
+    const ipp_endpoint *endpoint;
+
+    printf("%s\n", device->name);
+
+    if (device->model != NULL) {
+        printf("  model:    %s\n", device->model);
+    }
+
+    if (device->uuid != NULL) {
+        printf("  uuid:     %s\n", device->uuid);
+    }
+
+    printf("  scanner:  %s\n", device->scan ? "yes" : "no");
+    printf("  endpoints (%d), best first:\n", device->nendpoints);
+
+    for (endpoint = device->endpoints; endpoint != NULL;
+            endpoint = endpoint->next) {
+        printf("    %-46s %s%s if=%d\n", endpoint->uri,
+                ipp_netif_distance_name(endpoint->distance),
+                endpoint->linklocal ? ", link-local" : "",
+                endpoint->ifindex);
+    }
+
+    printf("\n");
+}
+
+/* Report the devices as assembled by the zeroconf layer
+ */
+static int
+discover_assembled (int timeout)
+{
+    ipp_zc_device *list, *device;
+    const char    *err;
+    int           count = 0;
+
+    list = ipp_zeroconf_discover(timeout, &err);
+
+    if (err != NULL) {
+        fprintf(stderr, "discovery failed: %s\n", err);
+        return 1;
+    }
+
+    for (device = list; device != NULL; device = device->next) {
+        print_zc_device(device);
+        count ++;
+    }
+
+    printf("%d device(s) found\n", count);
+
+    ipp_zc_device_list_free(list);
+
+    return 0;
+}
+
 /* The main function
  */
 int
 main (int argc, char **argv)
 {
     int        timeout = 2500;
+    bool       assembled = false;
     ipp_device *list, *dev;
     const char *err;
     int        i, count = 0;
@@ -87,6 +150,8 @@ main (int argc, char **argv)
     for (i = 1; i < argc; i ++) {
         if (!strcmp(argv[i], "-d")) {
             ipp_mdns_debug_enable(true);
+        } else if (!strcmp(argv[i], "-z")) {
+            assembled = true;
         } else if (!strcmp(argv[i], "-t") && i + 1 < argc) {
             timeout = atoi(argv[++ i]);
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -95,6 +160,10 @@ main (int argc, char **argv)
             fprintf(stderr, "%s: unknown option %s\n", argv[0], argv[i]);
             usage(argv[0], 1);
         }
+    }
+
+    if (assembled) {
+        return discover_assembled(timeout);
     }
 
     list = ipp_mdns_discover(timeout, &err);

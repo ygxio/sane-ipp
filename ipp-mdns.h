@@ -73,6 +73,16 @@ ipp_mdns_discover (int timeout_ms, const char **err);
 void
 ipp_device_list_free (ipp_device *list);
 
+/* Build an "ipp://" or "ipps://" URI out of an address literal, a port
+ * and a DNS-SD "rp" resource path.
+ *
+ * straddr is used as it stands, so an IPv6 literal must already carry
+ * its brackets. A NULL rp yields the default resource path. The result
+ * is to be released with free().
+ */
+char*
+ipp_uri_make (bool tls, const char *straddr, uint16_t port, const char *rp);
+
 /* Enable/disable discovery debug messages on stderr. Off by default.
  */
 void

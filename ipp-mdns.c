@@ -203,7 +203,7 @@ ipp_addr_format (const AvahiAddress *addr, int ifindex)
 
 /* Build the device URI out of address, port and the "rp" TXT value
  */
-static char*
+char*
 ipp_uri_make (bool tls, const char *straddr, uint16_t port, const char *rp)
 {
     const char *scheme = tls ? "ipps" : "ipp";

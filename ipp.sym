@@ -1,0 +1,33 @@
+{
+	global:
+		sane_cancel;
+		sane_close;
+		sane_control_option;
+		sane_exit;
+		sane_get_devices;
+		sane_get_option_descriptor;
+		sane_get_parameters;
+		sane_get_select_fd;
+		sane_init;
+		sane_ipp_cancel;
+		sane_ipp_close;
+		sane_ipp_control_option;
+		sane_ipp_exit;
+		sane_ipp_get_devices;
+		sane_ipp_get_option_descriptor;
+		sane_ipp_get_parameters;
+		sane_ipp_get_select_fd;
+		sane_ipp_init;
+		sane_ipp_open;
+		sane_ipp_read;
+		sane_ipp_set_io_mode;
+		sane_ipp_start;
+		sane_open;
+		sane_read;
+		sane_set_io_mode;
+		sane_start;
+		sane_strstatus;
+
+	local:
+		*;
+};
