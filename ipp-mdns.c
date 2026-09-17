@@ -266,6 +266,7 @@ ipp_device_free (ipp_device *dev)
     free(dev->model);
     free(dev->uuid);
     free(dev->rp);
+    free(dev->rs);
     free(dev->pdl);
     free(dev->adminurl);
     free(dev->uri);
@@ -396,7 +397,6 @@ ipp_mdns_resolver_callback (AvahiServiceResolver *r,
     ipp_device    *dev = rctx->device;
     ipp_mdns_rctx **prev;
     char          *straddr;
-    char          *scan;
 
     (void) protocol;
     (void) domain;
@@ -426,6 +426,14 @@ ipp_mdns_resolver_callback (AvahiServiceResolver *r,
             dev->rp = ipp_txt_get(txt, "rp");
         }
 
+        /* A scan service reports its resource in "rs", and that is
+         * what says the device scans at all
+         */
+        if (dev->rs == NULL) {
+            dev->rs = ipp_txt_get(txt, "rs");
+            dev->scan = dev->rs != NULL;
+        }
+
         if (dev->pdl == NULL) {
             dev->pdl = ipp_txt_get(txt, "pdl");
         }
@@ -434,19 +442,16 @@ ipp_mdns_resolver_callback (AvahiServiceResolver *r,
             dev->adminurl = ipp_txt_get(txt, "adminurl");
         }
 
-        scan = ipp_txt_get(txt, "scan");
-        if (scan != NULL) {
-            dev->scan = dev->scan || !strcasecmp(scan, "t");
-            free(scan);
-        }
-
         /* Build the URI, preferring IPv4: it is resolved first, but
          * both resolvers run in parallel and either may answer first.
+         *
+         * A device that scans is addressed at its scan resource.
          */
         if (dev->uri == NULL || (dev->uri_is_ip6 &&
                 addr->proto == AVAHI_PROTO_INET)) {
             free(dev->uri);
-            dev->uri = ipp_uri_make(dev->tls, straddr, port, dev->rp);
+            dev->uri = ipp_uri_make(dev->tls, straddr, port,
+                    dev->scan ? dev->rs : dev->rp);
             dev->uri_is_ip6 = addr->proto == AVAHI_PROTO_INET6;
         }
 

@@ -36,7 +36,7 @@ typedef enum {
 typedef struct ipp_endpoint {
     struct ipp_endpoint *next;      /* Next in the list */
 
-    char     *uri;                  /* ipp[s]://addr:port/rp */
+    char     *uri;                  /* ipp[s]://addr:port/rs or rp */
     char     *addr;                 /* Address literal, as it appears in uri */
 
     int      ifindex;               /* Network interface index */
@@ -51,7 +51,7 @@ typedef struct ipp_endpoint {
 /* A device, as assembled from all the findings that refer to it.
  *
  * Findings are considered to describe the same device when they agree
- * on both the DNS-SD instance name and the UUID.
+ * on the UUID. Findings without a UUID are kept apart.
  */
 typedef struct ipp_zc_device {
     struct ipp_zc_device *next;     /* Next in the list */
@@ -63,7 +63,7 @@ typedef struct ipp_zc_device {
     ipp_endpoint *endpoints;        /* Ordered, the best one first */
     int          nendpoints;        /* Count of endpoints */
 
-    bool scan;                      /* Some finding reported scan support */
+    bool scan;                      /* Some finding reported TXT "rs" */
 } ipp_zc_device;
 
 /* Browse the network and return the assembled device list.

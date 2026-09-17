@@ -342,7 +342,11 @@ ipp_endpoint_new (const ipp_device *dev, const char *straddr,
 
     endpoint = ipp_zc_alloc(1, sizeof(*endpoint));
 
-    endpoint->uri = ipp_uri_make(dev->tls, straddr, dev->port, dev->rp);
+    /* A scanner is addressed at its scan resource, which is not the one
+     * its print service answers at (PWG 5100.17, section 10)
+     */
+    endpoint->uri = ipp_uri_make(dev->tls, straddr, dev->port,
+            dev->scan ? dev->rs : dev->rp);
     endpoint->addr = ipp_zc_str_dup(straddr);
     endpoint->ifindex = dev->ifindex;
     endpoint->family = ss.ss_family;
@@ -465,35 +469,29 @@ ipp_zc_device_list_free (ipp_zc_device *list)
 
 /* Report whether a finding describes a device we have already seen.
  *
- * The instance name and the UUID must agree. The UUID is compared in its
+ * Only the UUID identifies a device: the instance name is not unique and
+ * may differ between its service types. The UUID is compared in its
  * canonical form, so the two service types of one device still match
- * when they spell it differently. A device that reports no UUID at all
- * is matched on the name alone, which is the best that can be done for
- * it.
+ * when they spell it differently. A finding that reports no UUID cannot
+ * be told apart from any other, so it is never merged.
  */
 static bool
-ipp_zc_device_match (const ipp_zc_device *device, const ipp_device *dev,
-        const char *uuid)
+ipp_zc_device_match (const ipp_zc_device *device, const char *uuid)
 {
-    if (device->name == NULL || dev->name == NULL) {
+    if (device->uuid == NULL || uuid == NULL) {
         return false;
     }
 
-    if (strcasecmp(device->name, dev->name) != 0) {
-        return false;
-    }
-
-    return ipp_zc_str_cmp(device->uuid, uuid) == 0;
+    return strcasecmp(device->uuid, uuid) == 0;
 }
 
 /* Find the device a finding belongs to, or NULL if it is a new one
  */
 static ipp_zc_device*
-ipp_zc_device_find (ipp_zc_device *list, const ipp_device *dev,
-        const char *uuid)
+ipp_zc_device_find (ipp_zc_device *list, const char *uuid)
 {
     for (; list != NULL; list = list->next) {
-        if (ipp_zc_device_match(list, dev, uuid)) {
+        if (ipp_zc_device_match(list, uuid)) {
             return list;
         }
     }
@@ -518,7 +516,7 @@ ipp_zc_device_merge (ipp_zc_device *list, const ipp_device *dev,
         uuid = ipp_zc_str_dup(dev->uuid);
     }
 
-    device = ipp_zc_device_find(list, dev, uuid);
+    device = ipp_zc_device_find(list, uuid);
 
     if (device == NULL) {
         device = ipp_zc_alloc(1, sizeof(*device));
@@ -566,8 +564,8 @@ ipp_zc_device_cmp (const void *p1, const void *p2)
         return cmp;
     }
 
-    /* Two devices are allowed to share an instance name as long as they
-     * differ in UUID, so that is what separates them here
+    /* Two devices are allowed to share an instance name, so the UUID
+     * is what separates them here
      */
     return ipp_zc_str_cmp(d1->uuid, d2->uuid);
 }

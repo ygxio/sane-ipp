@@ -65,6 +65,10 @@ print_device (const ipp_device *dev)
         printf("  rp:       %s\n", dev->rp);
     }
 
+    if (dev->rs != NULL) {
+        printf("  rs:       %s\n", dev->rs);
+    }
+
     if (dev->pdl != NULL) {
         printf("  pdl:      %s\n", dev->pdl);
     }
