@@ -15,7 +15,11 @@ AVAHI_LIBS   := $(shell pkg-config --libs avahi-client)
 CUPS_CFLAGS := $(shell cups-config --cflags)
 CUPS_LIBS   := $(shell cups-config --libs)
 
-CFLAGS  += $(AVAHI_CFLAGS) $(CUPS_CFLAGS)
+# libpng decodes the scanned images.
+PNG_CFLAGS := $(shell pkg-config --cflags libpng)
+PNG_LIBS   := $(shell pkg-config --libs libpng)
+
+CFLAGS  += $(AVAHI_CFLAGS) $(CUPS_CFLAGS) $(PNG_CFLAGS)
 
 # Installation directories.
 #
@@ -49,8 +53,8 @@ INSTALL  = install
 
 BACKEND  = libsane-ipp.so.1
 TOOLS    = ipp-discover ipp-probe
-OBJS     = ipp-discover.o ipp-mdns.o ipp-opt.o ipp-probe.o ipp-proto.o \
-           sane-ipp.o ipp-zeroconf.o
+OBJS     = ipp-discover.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-probe.o \
+           ipp-proto.o sane-ipp.o ipp-zeroconf.o
 DEPS     = $(OBJS:.o=.d)
 
 all: $(TOOLS) $(BACKEND)
@@ -61,12 +65,12 @@ ipp-discover: ipp-discover.o ipp-mdns.o ipp-zeroconf.o
 ipp-probe: ipp-probe.o ipp-proto.o
 	$(CC) $(CFLAGS) -o $@ $^ $(CUPS_LIBS)
 
-$(BACKEND): sane-ipp.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o ipp.sym
-	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o \
+$(BACKEND): sane-ipp.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o ipp.sym
+	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o \
 		-Wl,-soname,$(BACKEND) \
 		-Wl,--version-script=ipp.sym \
 		-Wl,--no-undefined \
-		$(AVAHI_LIBS) $(CUPS_LIBS)
+		$(AVAHI_LIBS) $(CUPS_LIBS) $(PNG_LIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
