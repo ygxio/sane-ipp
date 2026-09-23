@@ -69,6 +69,11 @@ typedef struct ipp_zc_device {
 /* Browse the network and return the assembled device list.
  *
  * Blocking, with the same timeout semantics as the underlying discovery.
+ *
+ * If the SANE_IPP_DEVICE environment variable is set, the network is not
+ * browsed. The list then holds the one device the variable describes, as
+ * "name:uri", for example
+ * "Virtual Scanner:ipp://localhost:50000/ipp/scan".
  * Returns a list to be released with ipp_zc_device_list_free(). On error
  * returns NULL and, if err is not NULL, stores there a static error
  * string; err is set to NULL on success.

@@ -717,7 +717,6 @@ ipp_mdns_discover (int timeout_ms, const char **err)
 
         rc = avahi_simple_poll_iterate(ctx.poll, (int) remain);
         if (rc != 0) {
-            /* rc > 0 means avahi_simple_poll_quit() was called */
             if (rc < 0) {
                 ipp_mdns_dbg("avahi_simple_poll_iterate: %d", rc);
                 ctx.err = "AVAHI poll failed";

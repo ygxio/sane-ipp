@@ -7,17 +7,17 @@
  *
  * SANE API entry points
  *
- * Scanning is not implemented yet. The entry points that depend on
- * scanner capabilities or on a running scan job are present, because
- * the SANE loader resolves all of them, but report that they are
- * unsupported.
+ * Discovery, opening a device and its options are implemented here and
+ * in the layers below. Scanning itself is not: the entry points that
+ * drive a scan job are present, because the SANE loader resolves all of
+ * them, but report that they are unsupported.
  */
 
+#include "ipp-opt.h"
 #include "ipp-proto.h"
 #include "ipp-zeroconf.h"
 
 #include <sane/sane.h>
-#include <sane/saneopts.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -32,35 +32,17 @@
  */
 #define IPP_SANE_OPEN_TIMEOUT           5000
 
-/******************** Options ********************/
-/* Option numbers.
- *
- * Option zero is required by the SANE standard to exist and to report
- * the number of options the device has, so a frontend can discover the
- * rest. The scan options will be added after it, once the scanner
- * capabilities are decoded.
- */
-enum {
-    IPP_OPT_NUM_OPTIONS = 0,
-
-    NUM_IPP_OPT
-};
-
 /******************** Local Types ********************/
 /* An open device. The SANE_Handle of this backend is a pointer to it.
  */
 typedef struct {
     char        *uri;       /* Device URI, as given to sane_open() */
     ipp_printer *printer;   /* Attributes, fetched when opened */
+    ipp_opt     *opt;       /* Options, built from those attributes */
 } ipp_sane_handle;
 
 /******************** Static variables ********************/
 static bool               ipp_sane_initialized;
-
-/* Option descriptors. They do not depend on the device yet, so one set
- * is shared by every handle.
- */
-static SANE_Option_Descriptor ipp_sane_opt_desc[NUM_IPP_OPT];
 
 /* Devices found by the most recent sane_get_devices(). The strings
  * handed out in ipp_sane_devs point into this list, so it must outlive
@@ -75,26 +57,6 @@ static const SANE_Device  **ipp_sane_devlist;
  * caller a way to release it.
  */
 static const SANE_Device  *ipp_sane_devlist_empty[1] = { NULL };
-
-/******************** Options ********************/
-/* Fill in the option descriptors
- */
-static void
-ipp_sane_opt_init (void)
-{
-    SANE_Option_Descriptor *desc = &ipp_sane_opt_desc[IPP_OPT_NUM_OPTIONS];
-
-    memset(desc, 0, sizeof(*desc));
-
-    desc->name = SANE_NAME_NUM_OPTIONS;
-    desc->title = SANE_TITLE_NUM_OPTIONS;
-    desc->desc = SANE_DESC_NUM_OPTIONS;
-    desc->type = SANE_TYPE_INT;
-    desc->unit = SANE_UNIT_NONE;
-    desc->size = sizeof(SANE_Word);
-    desc->cap = SANE_CAP_SOFT_DETECT;
-    desc->constraint_type = SANE_CONSTRAINT_NONE;
-}
 
 /******************** Device list ********************/
 /* Release the device list built by the previous sane_get_devices()
@@ -111,6 +73,19 @@ ipp_sane_devlist_free (void)
     ipp_sane_found = NULL;
 }
 
+/* Report whether a discovered device is worth showing to a frontend.
+ *
+ * A device has to be reachable, named, and say that it scans. The DNS-SD
+ * "rs" key is only a hint -- the attributes settle it when the device
+ * is opened -- but it costs nothing here and keeps print-only services
+ * out of a list of scanners.
+ */
+static bool
+ipp_sane_device_usable (const ipp_zc_device *device)
+{
+    return device->endpoints != NULL && device->name != NULL && device->scan;
+}
+
 /* Build the SANE device list out of the discovered devices.
  *
  * The SANE_Device strings are not copied. They point into the device
@@ -123,7 +98,7 @@ ipp_sane_devlist_build (ipp_zc_device *found)
     size_t        count = 0, i;
 
     for (device = found; device != NULL; device = device->next) {
-        if (device->endpoints != NULL && device->name != NULL) {
+        if (ipp_sane_device_usable(device)) {
             count ++;
         }
     }
@@ -141,7 +116,7 @@ ipp_sane_devlist_build (ipp_zc_device *found)
 
     i = 0;
     for (device = found; device != NULL; device = device->next) {
-        if (device->endpoints == NULL || device->name == NULL) {
+        if (!ipp_sane_device_usable(device)) {
             continue;
         }
 
@@ -177,7 +152,6 @@ sane_init (SANE_Int *version_code, SANE_Auth_Callback authorize)
                 SANE_CURRENT_MINOR, 0);
     }
 
-    ipp_sane_opt_init();
     ipp_sane_initialized = true;
 
     return SANE_STATUS_GOOD;
@@ -261,6 +235,11 @@ ipp_sane_handle_new (const char *uri, ipp_sane_handle **out)
         return SANE_STATUS_IO_ERROR;
     }
 
+    if (printer->scanner == NULL) {
+        ipp_printer_free(printer);
+        return SANE_STATUS_UNSUPPORTED;
+    }
+
     h = calloc(1, sizeof(*h));
     if (h == NULL) {
         ipp_printer_free(printer);
@@ -274,6 +253,14 @@ ipp_sane_handle_new (const char *uri, ipp_sane_handle **out)
         return SANE_STATUS_NO_MEM;
     }
 
+    h->opt = ipp_opt_new(printer->scanner);
+    if (h->opt == NULL) {
+        ipp_printer_free(printer);
+        free(h->uri);
+        free(h);
+        return SANE_STATUS_NO_MEM;
+    }
+
     h->printer = printer;
     *out = h;
 
@@ -283,7 +270,14 @@ ipp_sane_handle_new (const char *uri, ipp_sane_handle **out)
 /* Open a device, trying its endpoints in turn.
  *
  * The endpoints are ordered best first, but the best one is not always
- * the one that answers, so each is tried until one does.
+ * the one that answers, so each is tried until one does. An endpoint
+ * that answers without offering a scan service is no better than one
+ * that does not answer at all, and the next is tried just the same.
+ *
+ * The failure reported is the most informative one seen, not the last.
+ * A device is normally advertised on more addresses than it listens on,
+ * so an endpoint that answered and said it does not scan tells us more
+ * about the device than the ones that never answered at all.
  */
 static SANE_Status
 ipp_sane_device_open (const ipp_zc_device *device, ipp_sane_handle **out)
@@ -293,9 +287,14 @@ ipp_sane_device_open (const ipp_zc_device *device, ipp_sane_handle **out)
 
     for (endpoint = device->endpoints; endpoint != NULL;
             endpoint = endpoint->next) {
-        status = ipp_sane_handle_new(endpoint->uri, out);
-        if (status == SANE_STATUS_GOOD) {
-            return status;
+        SANE_Status s = ipp_sane_handle_new(endpoint->uri, out);
+
+        if (s == SANE_STATUS_GOOD) {
+            return s;
+        }
+
+        if (s == SANE_STATUS_UNSUPPORTED) {
+            status = s;
         }
     }
 
@@ -380,6 +379,7 @@ sane_close (SANE_Handle handle)
         return;
     }
 
+    ipp_opt_free(h->opt);
     ipp_printer_free(h->printer);
     free(h->uri);
     free(h);
@@ -408,26 +408,19 @@ sane_strstatus (SANE_Status status)
     return "Unknown SANE status";
 }
 
-/******************** Not implemented yet ********************/
-/* Scanning needs the scanner capabilities to be decoded and the scan
- * operations to be implemented. Until then these report that they have
- * nothing to offer, rather than pretending to work.
- */
-
+/******************** Options ********************/
 /* Get the option descriptor
  */
 const SANE_Option_Descriptor*
 sane_get_option_descriptor (SANE_Handle handle, SANE_Int option)
 {
-    if (handle == NULL) {
+    ipp_sane_handle *h = (ipp_sane_handle*) handle;
+
+    if (h == NULL) {
         return NULL;
     }
 
-    if (option < 0 || option >= NUM_IPP_OPT) {
-        return NULL;
-    }
-
-    return &ipp_sane_opt_desc[option];
+    return ipp_opt_descriptor(h->opt, option);
 }
 
 /* Get or set an option
@@ -436,11 +429,9 @@ SANE_Status
 sane_control_option (SANE_Handle handle, SANE_Int option, SANE_Action action,
         void *value, SANE_Int *info)
 {
-    if (handle == NULL || value == NULL) {
-        return SANE_STATUS_INVAL;
-    }
+    ipp_sane_handle *h = (ipp_sane_handle*) handle;
 
-    if (option < 0 || option >= NUM_IPP_OPT) {
+    if (h == NULL || value == NULL) {
         return SANE_STATUS_INVAL;
     }
 
@@ -448,20 +439,29 @@ sane_control_option (SANE_Handle handle, SANE_Int option, SANE_Action action,
         *info = 0;
     }
 
-    switch (option) {
-    case IPP_OPT_NUM_OPTIONS:
-        /* Read-only, as the standard requires
-         */
-        if (action != SANE_ACTION_GET_VALUE) {
-            return SANE_STATUS_INVAL;
-        }
+    switch (action) {
+    case SANE_ACTION_GET_VALUE:
+        return ipp_opt_get(h->opt, option, value);
 
-        *(SANE_Word*) value = NUM_IPP_OPT;
-        return SANE_STATUS_GOOD;
+    case SANE_ACTION_SET_VALUE:
+        return ipp_opt_set(h->opt, option, value, info);
+
+    case SANE_ACTION_SET_AUTO:
+        /* Nothing here has an automatic setting to fall back on: every
+         * option is a choice among what the device reported, and the
+         * value it starts out with is already the best guess we have.
+         */
+        return SANE_STATUS_UNSUPPORTED;
     }
 
-    return SANE_STATUS_UNSUPPORTED;
+    return SANE_STATUS_INVAL;
 }
+
+/******************** Not implemented yet ********************/
+/* Scanning needs the scan operations to be implemented. Until then
+ * these report that they have nothing to offer, rather than pretending
+ * to work.
+ */
 
 /* Get the parameters of the next scan
  */

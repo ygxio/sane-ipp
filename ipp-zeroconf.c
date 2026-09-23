@@ -611,6 +611,56 @@ ipp_zc_device_list_sort (ipp_zc_device *list)
 }
 
 /******************** Discovery ********************/
+/* The environment variable that replaces discovery with one device
+ */
+#define IPP_ZC_DEVICE_ENV       "SANE_IPP_DEVICE"
+
+/* Build the device list out of the SANE_IPP_DEVICE variable.
+ *
+ * The value is "name:uri", where uri is an ipp:// or ipps:// URI. The
+ * name ends where the URI begins, so it may itself contain colons.
+ *
+ * Returns NULL and sets err if the value cannot be understood.
+ */
+static ipp_zc_device*
+ipp_zc_device_from_env (const char *value, const char **err)
+{
+    const char    *uri;
+    ipp_zc_device *device;
+    ipp_endpoint  *endpoint;
+    bool          tls = false;
+
+    uri = strstr(value, ":ipp://");
+    if (uri == NULL) {
+        uri = strstr(value, ":ipps://");
+        tls = uri != NULL;
+    }
+
+    if (uri == NULL || uri == value) {
+        if (err != NULL) {
+            *err = "Invalid " IPP_ZC_DEVICE_ENV;
+        }
+        return NULL;
+    }
+
+    endpoint = ipp_zc_alloc(1, sizeof(*endpoint));
+    endpoint->uri = ipp_zc_str_dup(uri + 1);
+    endpoint->tls = tls;
+
+    device = ipp_zc_alloc(1, sizeof(*device));
+    device->name = strndup(value, (size_t) (uri - value));
+    if (device->name == NULL) {
+        perror("ipp-zeroconf: strndup");
+        abort();
+    }
+
+    device->endpoints = endpoint;
+    device->nendpoints = 1;
+    device->scan = true;
+
+    return device;
+}
+
 /* Browse the network and assemble the device list
  */
 ipp_zc_device*
@@ -622,6 +672,13 @@ ipp_zeroconf_discover (int timeout_ms, const char **err)
 
     if (err != NULL) {
         *err = NULL;
+    }
+
+    /* A configured device replaces discovery altogether, so that testing
+     * against a simulator is not disturbed by whatever else is around
+     */
+    if (getenv(IPP_ZC_DEVICE_ENV) != NULL) {
+        return ipp_zc_device_from_env(getenv(IPP_ZC_DEVICE_ENV), err);
     }
 
     found = ipp_mdns_discover(timeout_ms, err);

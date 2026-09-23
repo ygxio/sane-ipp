@@ -131,6 +131,17 @@ print_scanner (const ipp_scanner *scanner)
         printf("\n");
     }
 
+    for (i = 0; i < scanner->n_regions; i ++) {
+        const ipp_scan_region *reg = &scanner->regions[i];
+
+        printf("  %-16sx %d-%d, y %d-%d, width %d-%d, height %d-%d"
+                " (1/100 mm)\n", "  scan region:",
+                reg->x_origin.lower, reg->x_origin.upper,
+                reg->y_origin.lower, reg->y_origin.upper,
+                reg->x_dimension.lower, reg->x_dimension.upper,
+                reg->y_dimension.lower, reg->y_dimension.upper);
+    }
+
     print_str_list("  settable:", scanner->members, scanner->n_members);
 }
 
@@ -146,6 +157,7 @@ print_printer (const char *uri, const ipp_printer *printer)
     print_str("info:", printer->info);
     print_str("location:", printer->location);
     print_str("uuid:", printer->uuid);
+    print_str("service-type:", printer->service_type);
 
     printf("  %-16s%s (%d), accepting jobs: %s\n", "state:",
             ipp_state_name(printer->state), printer->state,

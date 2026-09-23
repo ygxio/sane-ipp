@@ -49,7 +49,7 @@ INSTALL  = install
 
 BACKEND  = libsane-ipp.so.1
 TOOLS    = ipp-discover ipp-probe
-OBJS     = ipp-discover.o ipp-mdns.o ipp-probe.o ipp-proto.o \
+OBJS     = ipp-discover.o ipp-mdns.o ipp-opt.o ipp-probe.o ipp-proto.o \
            sane-ipp.o ipp-zeroconf.o
 DEPS     = $(OBJS:.o=.d)
 
@@ -61,8 +61,8 @@ ipp-discover: ipp-discover.o ipp-mdns.o ipp-zeroconf.o
 ipp-probe: ipp-probe.o ipp-proto.o
 	$(CC) $(CFLAGS) -o $@ $^ $(CUPS_LIBS)
 
-$(BACKEND): sane-ipp.o ipp-mdns.o ipp-proto.o ipp-zeroconf.o ipp.sym
-	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-mdns.o ipp-proto.o ipp-zeroconf.o \
+$(BACKEND): sane-ipp.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o ipp.sym
+	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-zeroconf.o \
 		-Wl,-soname,$(BACKEND) \
 		-Wl,--version-script=ipp.sym \
 		-Wl,--no-undefined \
