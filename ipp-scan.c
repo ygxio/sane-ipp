@@ -10,6 +10,7 @@
 
 #include "ipp-scan.h"
 #include "ipp-png.h"
+#include "ipp-log.h"
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -44,10 +45,33 @@ struct ipp_scan {
     ipp_png                     *png;       /* Page being read, or NULL */
     bool                        net_eof;    /* Its data has all arrived */
 
+    /* Accounting of the page being read, for the log
+     */
+    size_t                      net_bytes;  /* Encoded bytes received */
+    size_t                      img_bytes;  /* Decoded bytes handed out */
+    struct timespec             started;    /* When it was asked for */
+
     uint8_t                     buf[IPP_SCAN_BUFSIZE];
 };
 
 /******************** Small helpers ********************/
+/* Log a message about the scan
+ */
+#define ipp_scan_log(level, ...)        ipp_log(level, "scan", __VA_ARGS__)
+
+/* Seconds elapsed since the given moment
+ */
+static double
+ipp_scan_elapsed (const struct timespec *since)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    return (double) (now.tv_sec - since->tv_sec) +
+           (double) (now.tv_nsec - since->tv_nsec) / 1e9;
+}
+
 /* Format an error message into the caller's buffer. Tolerates a NULL
  * buffer, so callers that do not want the message need no special case.
  */
@@ -74,7 +98,13 @@ ipp_scan_err (char *errbuf, size_t errlen, const char *fmt, ...)
 static bool
 ipp_scan_cancelled (const ipp_scan *scan)
 {
-    return *scan->cancel != 0;
+    if (*scan->cancel == 0) {
+        return false;
+    }
+
+    ipp_scan_log(IPP_LOG_DEBUG, "page %d: cancel noticed", scan->pages);
+
+    return true;
 }
 
 /* Wait for the given number of seconds, as a service that has no page
@@ -142,12 +172,17 @@ ipp_scan_feed (ipp_scan *scan, char *errbuf, size_t errlen)
     if (n == 0) {
         scan->net_eof = true;
 
+        ipp_scan_log(IPP_LOG_DEBUG, "page %d: all %zu bytes received",
+                scan->pages, scan->net_bytes);
+
         if (ipp_png_finish(scan->png, errbuf, errlen) < 0) {
             return SANE_STATUS_IO_ERROR;
         }
 
         return SANE_STATUS_GOOD;
     }
+
+    scan->net_bytes += (size_t) n;
 
     if (ipp_png_write(scan->png, scan->buf, (size_t) n, errbuf, errlen) < 0) {
         return SANE_STATUS_IO_ERROR;
@@ -171,11 +206,19 @@ static SANE_Status
 ipp_scan_page_end (ipp_scan *scan)
 {
     while (!scan->net_eof) {
-        if (ipp_job_read(scan->job, scan->buf, sizeof(scan->buf),
-                NULL, 0) <= 0) {
+        ssize_t n = ipp_job_read(scan->job, scan->buf, sizeof(scan->buf),
+                NULL, 0);
+
+        if (n <= 0) {
             scan->net_eof = true;
+        } else {
+            scan->net_bytes += (size_t) n;
         }
     }
+
+    ipp_scan_log(IPP_LOG_INFO, "page %d: done, %zu image bytes out of %zu "
+            "bytes of PNG in %.2f s", scan->pages, scan->img_bytes,
+            scan->net_bytes, ipp_scan_elapsed(&scan->started));
 
     return SANE_STATUS_EOF;
 }
@@ -213,6 +256,9 @@ ipp_scan_new (const char *uri, const ipp_job_params *params, bool multi,
     scan->multi = multi;
     scan->cancel = cancel;
 
+    ipp_scan_log(IPP_LOG_INFO, "job started: %s, source %s", uri,
+            multi ? "feeds several pages" : "gives one page");
+
     return scan;
 }
 
@@ -230,6 +276,11 @@ ipp_scan_next_page (ipp_scan *scan, char *errbuf, size_t errlen)
     ipp_png_free(scan->png);
     scan->png = NULL;
     scan->net_eof = false;
+    scan->net_bytes = 0;
+    scan->img_bytes = 0;
+    clock_gettime(CLOCK_MONOTONIC, &scan->started);
+
+    ipp_scan_log(IPP_LOG_DEBUG, "page %d: waiting for it", scan->pages + 1);
 
     for (;;) {
         int wait_sec;
@@ -243,6 +294,8 @@ ipp_scan_next_page (ipp_scan *scan, char *errbuf, size_t errlen)
             goto READY;
 
         case IPP_DOC_WAIT:
+            ipp_scan_log(IPP_LOG_DEBUG, "page %d: not ready, waiting %d s",
+                    scan->pages + 1, wait_sec);
             if (!ipp_scan_sleep(scan, wait_sec)) {
                 return SANE_STATUS_CANCELLED;
             }
@@ -254,6 +307,8 @@ ipp_scan_next_page (ipp_scan *scan, char *errbuf, size_t errlen)
              * blank or not, so a job that ends without one has failed.
              */
             if (scan->multi || scan->pages != 0) {
+                ipp_scan_log(IPP_LOG_INFO, "no more pages, after %d",
+                        scan->pages);
                 return SANE_STATUS_NO_DOCS;
             }
 
@@ -294,6 +349,17 @@ READY:
         if (status != SANE_STATUS_GOOD) {
             return status;
         }
+    }
+
+    if (ipp_log_enabled(IPP_LOG_INFO)) {
+        int width, height, depth, channels;
+
+        ipp_png_params(scan->png, &width, &height, &depth, &channels);
+        ipp_scan_log(IPP_LOG_INFO, "page %d: %s, %dx%d, %d bit, "
+                "%d channel(s), %zu bytes per line, after %.2f s",
+                scan->pages, format, width, height, depth, channels,
+                ipp_png_bytes_per_line(scan->png),
+                ipp_scan_elapsed(&scan->started));
     }
 
     return SANE_STATUS_GOOD;
@@ -346,6 +412,7 @@ ipp_scan_read (ipp_scan *scan, SANE_Byte *data, SANE_Int max_length,
 
         n = ipp_png_read(scan->png, data, (size_t) max_length);
         if (n != 0) {
+            scan->img_bytes += n;
             *length = (SANE_Int) n;
             return SANE_STATUS_GOOD;
         }
@@ -382,6 +449,9 @@ ipp_scan_finish (ipp_scan *scan)
 
     ipp_png_free(scan->png);
     scan->png = NULL;
+
+    ipp_scan_log(IPP_LOG_DEBUG, "job finishing after %d page(s)",
+            scan->pages);
 
     (void) ipp_job_next_document(scan->job, NULL, NULL, 0);
 }

@@ -87,11 +87,6 @@ ipp_device_list_free (ipp_device *list);
 char*
 ipp_uri_make (bool tls, const char *straddr, uint16_t port, const char *rp);
 
-/* Enable/disable discovery debug messages on stderr. Off by default.
- */
-void
-ipp_mdns_debug_enable (bool enable);
-
 #ifdef __cplusplus
 }
 #endif

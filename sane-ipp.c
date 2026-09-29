@@ -12,6 +12,7 @@
  * descriptor to hand a frontend that wants to wait for data itself.
  */
 
+#include "ipp-log.h"
 #include "ipp-opt.h"
 #include "ipp-proto.h"
 #include "ipp-scan.h"
@@ -77,7 +78,6 @@ typedef struct {
 
 /******************** Static variables ********************/
 static bool               ipp_sane_initialized;
-static bool               ipp_sane_debug;
 
 /* Devices found by the most recent sane_get_devices(). The strings
  * handed out in ipp_sane_devs point into this list, so it must outlive
@@ -94,29 +94,59 @@ static const SANE_Device  **ipp_sane_devlist;
 static const SANE_Device  *ipp_sane_devlist_empty[1] = { NULL };
 
 /******************** Debugging ********************/
-/* Print a debug message, if SANE_DEBUG_IPP asked for them.
+/* Log a message about a SANE call.
  *
  * A SANE status says little about what went wrong, and a frontend has
  * nowhere else to learn it, so this is where the reason goes.
  */
-static void
-ipp_sane_dbg (const char *fmt, ...)
-    __attribute__ ((format (printf, 1, 2)));
+#define ipp_sane_log(level, ...)        ipp_log(level, "sane", __VA_ARGS__)
 
+/* Format the value of an option, for the log
+ */
 static void
-ipp_sane_dbg (const char *fmt, ...)
+ipp_sane_opt_fmt (const SANE_Option_Descriptor *desc, const void *value,
+        char *buf, size_t size)
 {
-    va_list ap;
+    SANE_Int n, i;
+    size_t   len = 0;
 
-    if (!ipp_sane_debug) {
+    if (value == NULL) {
+        snprintf(buf, size, "(none)");
         return;
     }
 
-    va_start(ap, fmt);
-    fprintf(stderr, "ipp: ");
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-    va_end(ap);
+    switch (desc->type) {
+    case SANE_TYPE_STRING:
+        snprintf(buf, size, "\"%s\"", (const char*) value);
+        return;
+
+    case SANE_TYPE_BOOL:
+        snprintf(buf, size, "%s",
+                *(const SANE_Bool*) value ? "true" : "false");
+        return;
+
+    case SANE_TYPE_INT:
+    case SANE_TYPE_FIXED:
+        n = desc->size / (SANE_Int) sizeof(SANE_Word);
+        buf[0] = '\0';
+
+        for (i = 0; i < n && len < size; i ++) {
+            SANE_Word w = ((const SANE_Word*) value)[i];
+
+            if (desc->type == SANE_TYPE_FIXED) {
+                len += snprintf(buf + len, size - len, "%s%g",
+                        i ? " " : "", SANE_UNFIX(w));
+            } else {
+                len += snprintf(buf + len, size - len, "%s%d",
+                        i ? " " : "", w);
+            }
+        }
+        return;
+
+    default:
+        snprintf(buf, size, "-");
+        return;
+    }
 }
 
 /******************** Device list ********************/
@@ -206,12 +236,10 @@ ipp_sane_devlist_build (ipp_zc_device *found)
 SANE_Status
 sane_init (SANE_Int *version_code, SANE_Auth_Callback authorize)
 {
-    const char *debug = getenv("SANE_DEBUG_IPP");
-
     (void) authorize;
 
-    ipp_sane_debug = debug != NULL && *debug != '\0' && strcmp(debug, "0") != 0;
-    ipp_proto_debug_enable(ipp_sane_debug);
+    ipp_log_init();
+    ipp_sane_log(IPP_LOG_INFO, "sane_init");
 
     if (version_code != NULL) {
         *version_code = SANE_VERSION_CODE(SANE_CURRENT_MAJOR,
@@ -228,8 +256,12 @@ sane_init (SANE_Int *version_code, SANE_Auth_Callback authorize)
 void
 sane_exit (void)
 {
+    ipp_sane_log(IPP_LOG_INFO, "sane_exit");
+
     ipp_sane_devlist_free();
     ipp_sane_initialized = false;
+
+    ipp_log_exit();
 }
 
 /* Get the list of available devices
@@ -253,25 +285,45 @@ sane_get_devices (const SANE_Device ***device_list, SANE_Bool local_only)
      * nothing to report when the caller wants local devices only.
      */
     if (local_only) {
+        ipp_sane_log(IPP_LOG_INFO, "sane_get_devices: local only, "
+                "nothing to report");
         *device_list = ipp_sane_devlist_empty;
         return SANE_STATUS_GOOD;
     }
+
+    ipp_sane_log(IPP_LOG_INFO, "sane_get_devices: discovering");
 
     ipp_sane_devlist_free();
 
     found = ipp_zeroconf_discover(IPP_SANE_DISCOVERY_TIMEOUT, &err);
     if (err != NULL) {
+        ipp_sane_log(IPP_LOG_ERROR, "sane_get_devices: discovery failed: %s",
+                err);
         return SANE_STATUS_IO_ERROR;
     }
 
     status = ipp_sane_devlist_build(found);
     if (status != SANE_STATUS_GOOD) {
+        ipp_sane_log(IPP_LOG_ERROR, "sane_get_devices: %s",
+                sane_strstatus(status));
         ipp_zc_device_list_free(found);
         return status;
     }
 
     ipp_sane_found = found;
     *device_list = ipp_sane_devlist;
+
+    if (ipp_log_enabled(IPP_LOG_INFO)) {
+        size_t i;
+
+        for (i = 0; ipp_sane_devlist[i] != NULL; i ++) {
+            ipp_sane_log(IPP_LOG_INFO, "  %s (%s %s)",
+                    ipp_sane_devlist[i]->name, ipp_sane_devlist[i]->vendor,
+                    ipp_sane_devlist[i]->model);
+        }
+
+        ipp_sane_log(IPP_LOG_INFO, "sane_get_devices: %zu device(s)", i);
+    }
 
     return SANE_STATUS_GOOD;
 }
@@ -294,17 +346,27 @@ ipp_sane_handle_new (const char *uri, ipp_sane_handle **out)
     ipp_printer     *printer;
     char            err[512];
 
+    ipp_sane_log(IPP_LOG_DEBUG, "trying %s", uri);
+
     printer = ipp_get_printer_attributes(uri, IPP_SANE_OPEN_TIMEOUT,
             err, sizeof(err));
 
     if (printer == NULL) {
+        ipp_sane_log(IPP_LOG_ERROR, "%s", err);
         return SANE_STATUS_IO_ERROR;
     }
 
     if (printer->scanner == NULL) {
+        ipp_sane_log(IPP_LOG_ERROR, "%s: answers, but offers no scan service",
+                uri);
         ipp_printer_free(printer);
         return SANE_STATUS_UNSUPPORTED;
     }
+
+    ipp_sane_log(IPP_LOG_INFO, "%s: \"%s\", state %s, %saccepting jobs",
+            uri, printer->make_and_model ? printer->make_and_model : "",
+            ipp_state_name(printer->state),
+            printer->accepting_jobs ? "" : "not ");
 
     h = calloc(1, sizeof(*h));
     if (h == NULL) {
@@ -385,6 +447,14 @@ sane_open (SANE_String_Const devicename, SANE_Handle *handle)
         return SANE_STATUS_INVAL;
     }
 
+    /* Everything that happens to the device from here on, its opening
+     * included, goes to its trace file
+     */
+    ipp_log_trace_open(devicename);
+
+    ipp_sane_log(IPP_LOG_INFO, "sane_open: \"%s\"",
+            devicename != NULL ? devicename : "");
+
     /* A URI addresses a device directly, which is useful for a device
      * that discovery cannot see, and for testing.
      */
@@ -393,11 +463,18 @@ sane_open (SANE_String_Const devicename, SANE_Handle *handle)
         if (status == SANE_STATUS_GOOD) {
             *handle = (SANE_Handle) h;
         }
+        ipp_sane_log(status == SANE_STATUS_GOOD ? IPP_LOG_INFO : IPP_LOG_ERROR,
+                "sane_open: %s", sane_strstatus(status));
+        if (status != SANE_STATUS_GOOD) {
+            ipp_log_trace_close();
+        }
         return status;
     }
 
     found = ipp_zeroconf_discover(IPP_SANE_DISCOVERY_TIMEOUT, &err);
     if (err != NULL) {
+        ipp_sane_log(IPP_LOG_ERROR, "sane_open: discovery failed: %s", err);
+        ipp_log_trace_close();
         return SANE_STATUS_IO_ERROR;
     }
 
@@ -419,7 +496,10 @@ sane_open (SANE_String_Const devicename, SANE_Handle *handle)
     }
 
     if (device == NULL) {
+        ipp_sane_log(IPP_LOG_ERROR, "sane_open: \"%s\": no such device",
+                devicename != NULL ? devicename : "");
         ipp_zc_device_list_free(found);
+        ipp_log_trace_close();
         return SANE_STATUS_INVAL;
     }
 
@@ -427,8 +507,13 @@ sane_open (SANE_String_Const devicename, SANE_Handle *handle)
 
     ipp_zc_device_list_free(found);
 
+    ipp_sane_log(status == SANE_STATUS_GOOD ? IPP_LOG_INFO : IPP_LOG_ERROR,
+            "sane_open: %s", sane_strstatus(status));
+
     if (status == SANE_STATUS_GOOD) {
         *handle = (SANE_Handle) h;
+    } else {
+        ipp_log_trace_close();
     }
 
     return status;
@@ -445,11 +530,16 @@ sane_close (SANE_Handle handle)
         return;
     }
 
+    ipp_sane_log(IPP_LOG_INFO, "sane_close: %s%s", h->uri,
+            h->scan != NULL ? ", ending the job still open" : "");
+
     ipp_scan_free(h->scan);
     ipp_opt_free(h->opt);
     ipp_printer_free(h->printer);
     free(h->uri);
     free(h);
+
+    ipp_log_trace_close();
 }
 
 /* Return a string describing the status
@@ -496,7 +586,10 @@ SANE_Status
 sane_control_option (SANE_Handle handle, SANE_Int option, SANE_Action action,
         void *value, SANE_Int *info)
 {
-    ipp_sane_handle *h = (ipp_sane_handle*) handle;
+    ipp_sane_handle              *h = (ipp_sane_handle*) handle;
+    const SANE_Option_Descriptor *desc;
+    SANE_Status                  status;
+    char                         buf[256];
 
     if (h == NULL || value == NULL) {
         return SANE_STATUS_INVAL;
@@ -508,10 +601,41 @@ sane_control_option (SANE_Handle handle, SANE_Int option, SANE_Action action,
 
     switch (action) {
     case SANE_ACTION_GET_VALUE:
-        return ipp_opt_get(h->opt, option, value);
+        status = ipp_opt_get(h->opt, option, value);
+        if (ipp_log_enabled(IPP_LOG_TRACE)) {
+            desc = ipp_opt_descriptor(h->opt, option);
+            ipp_sane_opt_fmt(desc, status == SANE_STATUS_GOOD ? value : NULL,
+                    buf, sizeof(buf));
+            ipp_sane_log(IPP_LOG_TRACE, "get option %d \"%s\" = %s: %s",
+                    option, desc && desc->name ? desc->name : "?", buf,
+                    sane_strstatus(status));
+        }
+        return status;
 
     case SANE_ACTION_SET_VALUE:
-        return ipp_opt_set(h->opt, option, value, info);
+        desc = ipp_opt_descriptor(h->opt, option);
+        if (desc != NULL && ipp_log_enabled(IPP_LOG_DEBUG)) {
+            ipp_sane_opt_fmt(desc, value, buf, sizeof(buf));
+        } else {
+            snprintf(buf, sizeof(buf), "?");
+        }
+
+        status = ipp_opt_set(h->opt, option, value, info);
+
+        /* The backend may round the value to one the device has, and
+         * what it ends up as matters more than what was asked for
+         */
+        if (desc != NULL && ipp_log_enabled(IPP_LOG_DEBUG)) {
+            char now[256];
+
+            ipp_sane_opt_fmt(desc, value, now, sizeof(now));
+            ipp_sane_log(status == SANE_STATUS_GOOD ?
+                    IPP_LOG_DEBUG : IPP_LOG_ERROR,
+                    "set option %d \"%s\" = %s, now %s: %s, info 0x%x",
+                    option, desc->name ? desc->name : "", buf, now,
+                    sane_strstatus(status), info != NULL ? *info : 0);
+        }
+        return status;
 
     case SANE_ACTION_SET_AUTO:
         /* Nothing here has an automatic setting to fall back on: every
@@ -638,6 +762,20 @@ ipp_sane_job_start (ipp_sane_handle *h)
     source = params.source;
     h->multi = source != NULL && strcmp(source, "platen") != 0;
 
+    ipp_sane_log(IPP_LOG_INFO, "creating job: %s, source %s, mode %s, "
+            "sides %s, %d dpi, region %s", params.format,
+            params.source ? params.source : "(default)",
+            params.color_mode ? params.color_mode : "(default)",
+            params.sides ? params.sides : "(default)",
+            params.resolution,
+            params.have_region ? "given" : "(default)");
+
+    if (params.have_region) {
+        ipp_sane_log(IPP_LOG_DEBUG, "region, 1/100 mm: x %d, y %d, "
+                "width %d, height %d", params.x_origin, params.y_origin,
+                params.x_dimension, params.y_dimension);
+    }
+
     h->scan = ipp_scan_new(h->uri, &params, h->multi, IPP_SANE_JOB_TIMEOUT,
             &h->cancel, h->err, sizeof(h->err));
 
@@ -697,6 +835,13 @@ sane_get_parameters (SANE_Handle handle, SANE_Parameters *params)
         ipp_sane_params_estimate(h, params);
     }
 
+    ipp_sane_log(IPP_LOG_DEBUG, "sane_get_parameters (%s): %s, depth %d, "
+            "%dx%d, %d bytes per line",
+            h->page ? "actual" : "estimate",
+            params->format == SANE_FRAME_GRAY ? "gray" : "rgb",
+            params->depth, params->pixels_per_line, params->lines,
+            params->bytes_per_line);
+
     return SANE_STATUS_GOOD;
 }
 
@@ -716,8 +861,13 @@ sane_start (SANE_Handle handle)
      * on it, so the job it was meant for is ended here
      */
     if (h->cancel) {
+        ipp_sane_log(IPP_LOG_INFO, "sane_start: ending the job cancelled "
+                "after the last page");
         ipp_sane_scan_end(h);
     }
+
+    ipp_sane_log(IPP_LOG_INFO, "sane_start: %s",
+            h->scan != NULL ? "next page of the open job" : "new job");
 
     h->err[0] = '\0';
     h->cancel = 0;
@@ -728,9 +878,11 @@ sane_start (SANE_Handle handle)
     if (status != SANE_STATUS_GOOD) {
         h->scanning = 0;
 
-        if (h->err[0] != '\0') {
-            ipp_sane_dbg("sane_start: %s: %s", sane_strstatus(status), h->err);
-        }
+        ipp_sane_log(status == SANE_STATUS_CANCELLED ||
+                     status == SANE_STATUS_NO_DOCS ?
+                IPP_LOG_INFO : IPP_LOG_ERROR,
+                "sane_start: %s%s%s", sane_strstatus(status),
+                h->err[0] != '\0' ? ": " : "", h->err);
 
         ipp_sane_scan_end(h);
     }
@@ -776,6 +928,8 @@ sane_read (SANE_Handle handle, SANE_Byte *data, SANE_Int max_length,
      * Anything else that is not success ends the job.
      */
     if (status == SANE_STATUS_EOF) {
+        ipp_sane_log(IPP_LOG_DEBUG, "sane_read: end of page");
+
         if (!h->multi) {
             ipp_scan_finish(h->scan);
             ipp_sane_scan_end(h);
@@ -784,9 +938,10 @@ sane_read (SANE_Handle handle, SANE_Byte *data, SANE_Int max_length,
         return status;
     }
 
-    if (h->err[0] != '\0') {
-        ipp_sane_dbg("sane_read: %s: %s", sane_strstatus(status), h->err);
-    }
+    ipp_sane_log(status == SANE_STATUS_CANCELLED ?
+            IPP_LOG_INFO : IPP_LOG_ERROR,
+            "sane_read: %s%s%s", sane_strstatus(status),
+            h->err[0] != '\0' ? ": " : "", h->err);
 
     ipp_sane_scan_end(h);
 
@@ -799,6 +954,9 @@ sane_read (SANE_Handle handle, SANE_Byte *data, SANE_Int max_length,
  * the cancel flag. sane_start() and sane_read() look at it and end the
  * job; a frontend that calls neither of them again ends it with
  * sane_close().
+ *
+ * Nothing is logged here either, as the logger takes a lock. The
+ * cancel is logged by whoever notices it.
  *
  * Outside of a page there is nothing to cancel, and the call is
  * ignored: a frontend calls this after every scan that went all the

@@ -9,6 +9,7 @@
  */
 
 #include "ipp-zeroconf.h"
+#include "ipp-log.h"
 #include "ipp-mdns.h"
 
 #include <arpa/inet.h>
@@ -678,6 +679,8 @@ ipp_zeroconf_discover (int timeout_ms, const char **err)
      * against a simulator is not disturbed by whatever else is around
      */
     if (getenv(IPP_ZC_DEVICE_ENV) != NULL) {
+        ipp_log(IPP_LOG_INFO, "zconf", "discovery replaced by %s=%s",
+                IPP_ZC_DEVICE_ENV, getenv(IPP_ZC_DEVICE_ENV));
         return ipp_zc_device_from_env(getenv(IPP_ZC_DEVICE_ENV), err);
     }
 
@@ -708,7 +711,22 @@ ipp_zeroconf_discover (int timeout_ms, const char **err)
     list = ipp_zc_device_list_sort(list);
 
     for (device = list; device != NULL; device = device->next) {
+        ipp_endpoint *endpoint;
+
         ipp_endpoint_list_sort_dedup(device);
+
+        ipp_log(IPP_LOG_DEBUG, "zconf", "device \"%s\": model \"%s\", "
+                "uuid %s, %s, %d endpoint(s)",
+                device->name ? device->name : "",
+                device->model ? device->model : "",
+                device->uuid ? device->uuid : "(none)",
+                device->scan ? "scans" : "does not scan",
+                device->nendpoints);
+
+        for (endpoint = device->endpoints; endpoint != NULL;
+                endpoint = endpoint->next) {
+            ipp_log(IPP_LOG_DEBUG, "zconf", "  %s", endpoint->uri);
+        }
     }
 
     return list;
