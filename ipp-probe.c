@@ -8,6 +8,7 @@
  * Command-line IPP printer attributes tool
  */
 
+#include "ipp-log.h"
 #include "ipp-proto.h"
 
 #include <stdio.h>
@@ -20,7 +21,7 @@ static void
 usage (const char *argv0, int exit_code)
 {
     printf("usage: %s [-d] [-t TIMEOUT_MS] URI...\n", argv0);
-    printf("  -d            enable debug output\n");
+    printf("  -d            enable debug output, IPP messages included\n");
     printf("  -t TIMEOUT_MS request timeout, default 5000\n");
     printf("\n");
     printf("URI is an ipp:// or ipps:// printer URI, as reported\n");
@@ -183,9 +184,11 @@ main (int argc, char **argv)
     int  i, probed = 0, failed = 0;
     char err[512];
 
+    ipp_log_init();
+
     for (i = 1; i < argc; i ++) {
         if (!strcmp(argv[i], "-d")) {
-            ipp_proto_debug_enable(true);
+            ipp_log_set_level(IPP_LOG_TRACE);
         } else if (!strcmp(argv[i], "-t") && i + 1 < argc) {
             timeout = atoi(argv[++ i]);
         } else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {

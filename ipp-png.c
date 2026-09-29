@@ -11,6 +11,7 @@
  */
 
 #include "ipp-png.h"
+#include "ipp-log.h"
 
 #include <png.h>
 
@@ -138,16 +139,17 @@ ipp_png_error_callback (png_struct *png, const char *message)
     png_longjmp(png, 1);
 }
 
-/* Ignore a libpng warning.
+/* Log a libpng warning.
  *
  * A warning means the image is unusual, not that it cannot be decoded,
- * and a scan is no place to report it.
+ * so it goes to the log only, not to the frontend's stderr.
  */
 static void
 ipp_png_warning_callback (png_struct *png, const char *message)
 {
     (void) png;
-    (void) message;
+
+    ipp_log(IPP_LOG_DEBUG, "png", "libpng warning: %s", message);
 }
 
 /* The header has been parsed: settle what the decoded rows will look
@@ -166,6 +168,10 @@ ipp_png_info_callback (png_struct *png, png_info *info)
 
     png_get_IHDR(png, info, &width, &height, &depth, &color_type,
             &interlace, NULL, NULL);
+
+    ipp_log(IPP_LOG_DEBUG, "png", "header: %ux%u, depth %d, color type %d, "
+            "%s", (unsigned) width, (unsigned) height, depth, color_type,
+            interlace != PNG_INTERLACE_NONE ? "interlaced" : "not interlaced");
 
     if (interlace != PNG_INTERLACE_NONE) {
         png_error(png, "interlaced images are not supported");

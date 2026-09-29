@@ -14,6 +14,7 @@
  */
 
 #include "ipp-proto.h"
+#include "ipp-log.h"
 
 #include <cups/cups.h>
 #include <cups/http.h>
@@ -40,34 +41,59 @@
  */
 #define IPP_REQUESTING_USER     "sane-ipp"
 
-/******************** Static variables ********************/
-static bool ipp_proto_debug = false;
-
 /******************** Debugging ********************/
-/* Print debug message, if enabled
+/* Print debug message
+ */
+#define ipp_proto_dbg(...)      ipp_log(IPP_LOG_DEBUG, "proto", __VA_ARGS__)
+
+/* Write an IPP message to the log, attribute by attribute.
+ *
+ * This is the one place to look when a device and the backend disagree
+ * about what was said, so every attribute goes in, grouped the way it
+ * travelled. Only built when somebody will read it: the response to
+ * Get-Printer-Attributes runs to hundreds of attributes.
  */
 static void
-ipp_proto_dbg (const char *fmt, ...)
+ipp_proto_dump (const char *what, ipp_t *msg, bool request)
 {
-    va_list ap;
+    ipp_attribute_t *attr;
+    ipp_tag_t       group = IPP_TAG_ZERO;
+    char            value[2048];
 
-    if (!ipp_proto_debug) {
+    if (msg == NULL || !ipp_log_enabled(IPP_LOG_TRACE)) {
         return;
     }
 
-    va_start(ap, fmt);
-    fputs("ipp-proto: ", stderr);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
-    va_end(ap);
-}
+    if (request) {
+        ipp_log(IPP_LOG_TRACE, "proto", "%s: >>> request %s, request-id %d",
+                what, ippOpString(ippGetOperation(msg)),
+                ippGetRequestId(msg));
+    } else {
+        ipp_log(IPP_LOG_TRACE, "proto", "%s: <<< response %s, request-id %d",
+                what, ippErrorString(ippGetStatusCode(msg)),
+                ippGetRequestId(msg));
+    }
 
-/* Enable/disable protocol debug messages
- */
-void
-ipp_proto_debug_enable (bool enable)
-{
-    ipp_proto_debug = enable;
+    for (attr = ippFirstAttribute(msg); attr != NULL;
+            attr = ippNextAttribute(msg)) {
+        const char *name = ippGetName(attr);
+
+        if (ippGetGroupTag(attr) != group) {
+            group = ippGetGroupTag(attr);
+            ipp_log(IPP_LOG_TRACE, "proto", "  %s", ippTagString(group));
+        }
+
+        /* A nameless attribute separates two groups of the same kind
+         */
+        if (name == NULL) {
+            continue;
+        }
+
+        ippAttributeString(attr, value, sizeof(value));
+        ipp_log(IPP_LOG_TRACE, "proto", "    %s %s%s = %s", name,
+                ippGetCount(attr) > 1 ? "1setOf " : "",
+                ippTagString(ippGetValueTag(attr)), value);
+    }
 }
 
 /******************** Small helpers ********************/
@@ -623,7 +649,8 @@ ipp_dest_connect (const ipp_dest *dest, int timeout_ms, const char *uri,
 {
     http_t *http;
 
-    ipp_proto_dbg("connecting to %s:%d", dest->host, dest->port);
+    ipp_proto_dbg("connecting to %s:%d%s", dest->host, dest->port,
+            dest->encryption == HTTP_ENCRYPTION_ALWAYS ? " (TLS)" : "");
 
     http = httpConnect2(dest->host, dest->port, NULL, AF_UNSPEC,
             dest->encryption, IPP_CONNECT_ATTEMPTS, timeout_ms, NULL);
@@ -634,6 +661,8 @@ ipp_dest_connect (const ipp_dest *dest, int timeout_ms, const char *uri,
     }
 
     httpSetTimeout(http, (double) timeout_ms / 1000.0, NULL, NULL);
+
+    ipp_proto_dbg("connected to %s:%d", dest->host, dest->port);
 
     return http;
 }
@@ -680,9 +709,12 @@ ipp_get_printer_attributes (const char *uri, int timeout_ms,
                     sizeof(ipp_requested_attrs[0]),
             NULL, ipp_requested_attrs);
 
+    ipp_proto_dump("Get-Printer-Attributes", request, true);
+
     /* cupsDoRequest() consumes the request, whatever the outcome
      */
     response = cupsDoRequest(http, request, resource);
+    ipp_proto_dump("Get-Printer-Attributes", response, false);
 
     if (response == NULL) {
         ipp_proto_err(errbuf, errlen, "%s: %s", uri, cupsLastErrorString());
@@ -841,7 +873,10 @@ ipp_job_create (const char *uri, const ipp_job_params *params,
     /* cupsDoRequest() consumes the request, whatever the outcome
      */
     request = ipp_job_request(uri, params);
+    ipp_proto_dump("Create-Job", request, true);
+
     response = cupsDoRequest(http, request, dest.resource);
+    ipp_proto_dump("Create-Job", response, false);
 
     if (response == NULL) {
         ipp_proto_err(errbuf, errlen, "%s: Create-Job: %s", uri,
@@ -896,14 +931,22 @@ ipp_job_create (const char *uri, const ipp_job_params *params,
 static void
 ipp_job_drain (ipp_job *job)
 {
-    char buf[4096];
+    char   buf[4096];
+    size_t total = 0;
 
     while (job->reading) {
         ssize_t n = cupsReadResponseData(job->http, buf, sizeof(buf));
 
         if (n <= 0) {
             job->reading = false;
+        } else {
+            total += (size_t) n;
         }
+    }
+
+    if (total != 0) {
+        ipp_proto_dbg("job %d: discarded %zu bytes of unread image data",
+                job->job_id, total);
     }
 }
 
@@ -949,6 +992,8 @@ ipp_job_next_document (ipp_job *job, int *wait_sec,
      * which would consume the body along with the message. Unlike
      * cupsDoRequest(), cupsSendRequest() does not take the request over.
      */
+    ipp_proto_dump("Get-Next-Document-Data", request, true);
+
     http_status = cupsSendRequest(job->http, request, job->dest.resource, 0);
     ippDelete(request);
 
@@ -960,6 +1005,8 @@ ipp_job_next_document (ipp_job *job, int *wait_sec,
     }
 
     response = cupsGetResponse(job->http, job->dest.resource);
+    ipp_proto_dump("Get-Next-Document-Data", response, false);
+
     if (response == NULL) {
         ipp_proto_err(errbuf, errlen, "%s: Get-Next-Document-Data: %s",
                 job->uri, cupsLastErrorString());
@@ -1069,7 +1116,11 @@ ipp_job_read (ipp_job *job, void *data, size_t size,
     }
 
     if (n == 0) {
+        ipp_proto_dbg("job %d: end of image data", job->job_id);
         job->reading = false;
+    } else {
+        ipp_log(IPP_LOG_TRACE, "proto", "job %d: read %zd bytes",
+                job->job_id, n);
     }
 
     return n;
@@ -1093,6 +1144,8 @@ ipp_job_cancel (ipp_job *job)
      * connection is dropped instead.
      */
     if (job->reading) {
+        ipp_proto_dbg("job %d: dropping connection to cancel mid-image",
+                job->job_id);
         httpClose(job->http);
         job->http = NULL;
         job->reading = false;
@@ -1115,7 +1168,10 @@ ipp_job_cancel (ipp_job *job)
     ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_NAME,
             "requesting-user-name", NULL, IPP_REQUESTING_USER);
 
+    ipp_proto_dump("Cancel-Job", request, true);
+
     response = cupsDoRequest(job->http, request, job->dest.resource);
+    ipp_proto_dump("Cancel-Job", response, false);
 
     ipp_proto_dbg("Cancel-Job: job-id=%d: %s", job->job_id,
             response != NULL

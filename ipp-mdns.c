@@ -13,6 +13,7 @@
  */
 
 #include "ipp-mdns.h"
+#include "ipp-log.h"
 
 #include <avahi-client/client.h>
 #include <avahi-client/lookup.h>
@@ -80,27 +81,10 @@ typedef struct {
     MDNS_SERVICE service;       /* Service being browsed */
 } ipp_mdns_bctx;
 
-/******************** Static variables ********************/
-static bool ipp_mdns_debug = false;
-
 /******************** Debugging ********************/
-/* Print debug message, if enabled
+/* Print debug message
  */
-static void
-ipp_mdns_dbg (const char *fmt, ...)
-{
-    va_list ap;
-
-    if (!ipp_mdns_debug) {
-        return;
-    }
-
-    va_start(ap, fmt);
-    fputs("ipp-mdns: ", stderr);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
-    va_end(ap);
-}
+#define ipp_mdns_dbg(...)       ipp_log(IPP_LOG_DEBUG, "mdns", __VA_ARGS__)
 
 /******************** Small helpers ********************/
 /* strdup() that aborts on out of memory
@@ -641,14 +625,6 @@ ipp_mdns_ctx_cleanup (ipp_mdns_ctx *ctx)
     }
 }
 
-/* Enable/disable discovery debug messages
- */
-void
-ipp_mdns_debug_enable (bool enable)
-{
-    ipp_mdns_debug = enable;
-}
-
 /* Browse the network for IPP devices
  */
 ipp_device*
@@ -703,6 +679,8 @@ ipp_mdns_discover (int timeout_ms, const char **err)
         }
     }
 
+    ipp_mdns_dbg("browsing, timeout %d ms", timeout_ms);
+
     /* Run the poll until discovery settles or the timeout expires */
     deadline = ipp_mdns_now() + timeout_ms;
 
@@ -711,7 +689,17 @@ ipp_mdns_discover (int timeout_ms, const char **err)
         int     rc;
 
         if (remain <= 0) {
-            ipp_mdns_dbg("discovery timed out");
+            ipp_mdns_dbg("discovery timed out, %d resolve(s) unanswered",
+                    ctx.pending);
+
+            if (ctx.pending != 0) {
+                ipp_mdns_rctx *rctx;
+
+                for (rctx = ctx.rctx_list; rctx != NULL; rctx = rctx->next) {
+                    ipp_log(IPP_LOG_INFO, "mdns", "%s: no answer to resolve "
+                            "before the timeout", rctx->device->name);
+                }
+            }
             break;
         }
 

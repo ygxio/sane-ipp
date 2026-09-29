@@ -8,6 +8,7 @@
  * Command-line IPP device discovery tool
  */
 
+#include "ipp-log.h"
 #include "ipp-mdns.h"
 #include "ipp-zeroconf.h"
 
@@ -151,9 +152,11 @@ main (int argc, char **argv)
     const char *err;
     int        i, count = 0;
 
+    ipp_log_init();
+
     for (i = 1; i < argc; i ++) {
         if (!strcmp(argv[i], "-d")) {
-            ipp_mdns_debug_enable(true);
+            ipp_log_set_level(IPP_LOG_DEBUG);
         } else if (!strcmp(argv[i], "-z")) {
             assembled = true;
         } else if (!strcmp(argv[i], "-t") && i + 1 < argc) {

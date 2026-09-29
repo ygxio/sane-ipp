@@ -262,11 +262,6 @@ ipp_job_cancel (ipp_job *job);
 void
 ipp_job_free (ipp_job *job);
 
-/* Enable/disable protocol debug messages on stderr. Off by default.
- */
-void
-ipp_proto_debug_enable (bool enable);
-
 #ifdef __cplusplus
 }
 #endif

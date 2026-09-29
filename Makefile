@@ -53,27 +53,30 @@ INSTALL  = install
 
 BACKEND  = libsane-ipp.so.1
 TOOLS    = ipp-discover ipp-probe
-OBJS     = ipp-discover.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-probe.o \
-           ipp-proto.o ipp-scan.o sane-ipp.o ipp-zeroconf.o
+OBJS     = ipp-conf.o ipp-discover.o ipp-log.o ipp-png.o ipp-mdns.o ipp-opt.o \
+           ipp-probe.o ipp-proto.o ipp-scan.o sane-ipp.o ipp-zeroconf.o
 DEPS     = $(OBJS:.o=.d)
 
 all: $(TOOLS) $(BACKEND)
 
-ipp-discover: ipp-discover.o ipp-mdns.o ipp-zeroconf.o
-	$(CC) $(CFLAGS) -o $@ $^ $(AVAHI_LIBS)
+ipp-discover: ipp-discover.o ipp-conf.o ipp-log.o ipp-mdns.o ipp-zeroconf.o
+	$(CC) $(CFLAGS) -o $@ $^ $(AVAHI_LIBS) -pthread
 
-ipp-probe: ipp-probe.o ipp-proto.o
-	$(CC) $(CFLAGS) -o $@ $^ $(CUPS_LIBS)
+ipp-probe: ipp-probe.o ipp-conf.o ipp-log.o ipp-proto.o
+	$(CC) $(CFLAGS) -o $@ $^ $(CUPS_LIBS) -pthread
 
-$(BACKEND): sane-ipp.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-scan.o ipp-zeroconf.o ipp.sym
-	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-scan.o ipp-zeroconf.o \
+$(BACKEND): sane-ipp.o ipp-conf.o ipp-log.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-scan.o ipp-zeroconf.o ipp.sym
+	$(CC) $(CFLAGS) -shared -o $@ sane-ipp.o ipp-conf.o ipp-log.o ipp-png.o ipp-mdns.o ipp-opt.o ipp-proto.o ipp-scan.o ipp-zeroconf.o \
 		-Wl,-soname,$(BACKEND) \
 		-Wl,--version-script=ipp.sym \
 		-Wl,--no-undefined \
-		$(AVAHI_LIBS) $(CUPS_LIBS) $(PNG_LIBS)
+		$(AVAHI_LIBS) $(CUPS_LIBS) $(PNG_LIBS) -pthread
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Where the configuration file is looked for, after SANE_CONFIG_DIR
+ipp-conf.o: CFLAGS += -DIPP_CONFIG_DIR='"$(confdir)"'
 
 install: all
 	$(INSTALL) -d $(DESTDIR)$(sanedir)
@@ -81,10 +84,13 @@ install: all
 	$(INSTALL) -d $(DESTDIR)$(confdir)/dll.d
 	[ -e $(DESTDIR)$(confdir)/dll.d/ipp ] || \
 		$(INSTALL) -m 644 dll.conf $(DESTDIR)$(confdir)/dll.d/ipp
+	[ -e $(DESTDIR)$(confdir)/ipp.conf ] || \
+		$(INSTALL) -m 644 ipp.conf $(DESTDIR)$(confdir)/ipp.conf
 
 uninstall:
 	rm -f $(DESTDIR)$(sanedir)/$(BACKEND)
 	rm -f $(DESTDIR)$(confdir)/dll.d/ipp
+	rm -f $(DESTDIR)$(confdir)/ipp.conf
 
 clean:
 	rm -f $(TOOLS) $(BACKEND) $(OBJS) $(DEPS)
